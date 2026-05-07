@@ -1293,20 +1293,21 @@ export class LocalAgentExecutor<TOutput extends z.ZodTypeAny> {
       if (part) {
         toolResponseParts.push(part);
       } else {
-        // This should not happen if the scheduler is working correctly, but if it does,
-        // we MUST inject a synthetic error response to maintain the 1:1 part mapping.
-        debugLogger.error(
-          `[LocalAgentExecutor] Internal Error: No tool result found for callId ${callId} (${functionCall.name}). Injecting synthetic error response to maintain protocol integrity.`,
+        // If the execution was aborted (or timed out) mid-turn, the scheduler
+        // was interrupted, so empty responses are expected.
+        if (signal.aborted) {
+          continue;
+        }
+
+        // If it was a successful complete_task call, it won't have responseParts.
+        // This is expected because the task is complete and we won't send this turn back to the API.
+        if (functionCall.name === COMPLETE_TASK_TOOL_NAME && taskCompleted) {
+          continue;
+        }
+
+        throw new Error(
+          `[LocalAgentExecutor] Critical System Failure: Tool execution result was lost/dropped by the scheduler for callId ${callId} (${functionCall.name}). This indicates an internal race condition or scheduler bug.`,
         );
-        toolResponseParts.push({
-          functionResponse: {
-            name: functionCall.name,
-            id: callId,
-            response: {
-              error: `Internal Error: Tool execution result was lost. Please try the operation again.`,
-            },
-          },
-        });
       }
     }
 
