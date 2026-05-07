@@ -9,11 +9,11 @@ import { formatNodesForLlm } from './formatNodesForLlm.js';
 import { NodeType, type ConcreteNode } from '../graph/types.js';
 
 describe('formatNodesForLlm', () => {
-  it('should format standard user and model text messages', () => {
+  it('should format standard user and model text messages with relative turns', () => {
     const nodes: ConcreteNode[] = [
       {
         id: '1',
-        turnId: '1',
+        turnId: 'turn-a',
         type: NodeType.USER_PROMPT,
         timestamp: 1000,
         role: 'user',
@@ -21,7 +21,7 @@ describe('formatNodesForLlm', () => {
       },
       {
         id: '2',
-        turnId: '2',
+        turnId: 'turn-b',
         type: NodeType.AGENT_THOUGHT,
         timestamp: 1001,
         role: 'model',
@@ -30,8 +30,10 @@ describe('formatNodesForLlm', () => {
     ];
 
     const result = formatNodesForLlm(nodes);
-    expect(result).toContain('[USER] [USER_PROMPT]: Hello AI');
-    expect(result).toContain('[MODEL] [AGENT_THOUGHT]: Hello User');
+    // turn-a is idx 0 (relative: -1)
+    // turn-b is idx 1 (relative: 0)
+    expect(result).toContain('[Turn -1] [USER] [USER_PROMPT]: Hello AI');
+    expect(result).toContain('[Turn 0] [MODEL] [AGENT_THOUGHT]: Hello User');
   });
 
   it('should format tool calls correctly', () => {
@@ -43,16 +45,18 @@ describe('formatNodesForLlm', () => {
         timestamp: 1000,
         role: 'model',
         payload: {
-          functionCall: { name: 'run_cmd', args: { cmd: 'ls' } },
+          functionCall: { name: 'run_shell_command', args: { cmd: 'ls' } },
         },
       },
     ];
 
     const result = formatNodesForLlm(nodes);
-    expect(result).toContain('[MODEL] [TOOL_EXECUTION]: CALL: run_cmd({"cmd":"ls"})');
+    expect(result).toContain(
+      '[Turn 0] [MODEL] [TOOL_EXECUTION]: CALL: run_shell_command({"cmd":"ls"})',
+    );
   });
 
-  it('should format tool responses correctly', () => {
+  it('should format tool responses with semantic wrappers', () => {
     const nodes: ConcreteNode[] = [
       {
         id: '1',
@@ -62,7 +66,7 @@ describe('formatNodesForLlm', () => {
         role: 'user',
         payload: {
           functionResponse: {
-            name: 'run_cmd',
+            name: 'run_shell_command',
             response: { output: 'file.txt' },
           },
         },
@@ -70,13 +74,15 @@ describe('formatNodesForLlm', () => {
     ];
 
     const result = formatNodesForLlm(nodes);
-    expect(result).toContain('[USER] [TOOL_EXECUTION]: RESPONSE: {"output":"file.txt"}');
+    expect(result).toContain(
+      '[Turn 0] [USER] [TOOL_EXECUTION]: [SHELL EXECUTION (run_shell_command)]: {"output":"file.txt"}',
+    );
   });
 
-  it('should truncate massive tool responses', () => {
+  it('should truncate massive tool responses and retain the semantic wrapper', () => {
     // Generate a 3000 character string (exceeds the default 2000 limit)
     const massiveOutput = 'A'.repeat(1500) + 'B'.repeat(1500);
-    
+
     const nodes: ConcreteNode[] = [
       {
         id: '1',
@@ -94,10 +100,8 @@ describe('formatNodesForLlm', () => {
     ];
 
     const result = formatNodesForLlm(nodes, { maxToolResponseChars: 2000 });
-    
-    // The exact JSON string will be slightly longer because of {"output":""} wrapper
-    // The output should contain the beginning of the A's and the end of the B's
-    expect(result).toContain('RESPONSE: {"output":"AAAA');
+
+    expect(result).toContain('[FILE/WEB CONTENT (read_file)]: {"output":"AAAA');
     expect(result).toContain('[TRUNCATED');
     expect(result).toContain('chars] ...BBBB');
     expect(result.length).toBeLessThan(2500); // Ensure it was actually truncated
@@ -117,6 +121,6 @@ describe('formatNodesForLlm', () => {
     ];
 
     const result = formatNodesForLlm(nodes);
-    expect(result).toContain('[SYSTEM] [SNAPSHOT]: Summary of past');
+    expect(result).toContain('[Turn 0] [SYSTEM] [SNAPSHOT]: Summary of past');
   });
 });
