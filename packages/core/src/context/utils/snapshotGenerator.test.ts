@@ -21,6 +21,9 @@ describe('SnapshotGenerator', () => {
       llmClient: {
         generateJson: mockGenerateJson,
       },
+      tokenCalculator: {
+        estimateTokensForString: vi.fn().mockReturnValue(100),
+      },
       promptId: 'test-prompt',
     } as unknown as ContextEnvironment;
   });
@@ -216,5 +219,127 @@ describe('SnapshotGenerator', () => {
     // State should remain perfectly intact because Array.isArray checks protect the merge logic
     expect(result.discovered_facts).toEqual(['Important Fact']);
     expect(result.active_tasks).toHaveLength(1);
+  });
+
+  describe('Structured Pruning Backstop', () => {
+    it('should iteratively drop discovered_facts first when over budget', async () => {
+      const prevState: SnapshotState = {
+        active_tasks: [{ id: 'task_1', description: 'Surviving Task' }],
+        discovered_facts: ['Old Fact 1', 'Old Fact 2', 'Old Fact 3'],
+        constraints_and_preferences: ['Rule 1', 'Rule 2'],
+        recent_arc: ['Arc 1'],
+      };
+      mockGenerateJson.mockResolvedValue({});
+      vi.mocked(
+        mockEnv.tokenCalculator.estimateTokensForString,
+      ).mockImplementation((str) => str.length);
+      const generator = new SnapshotGenerator(mockEnv);
+      const resultJson = await generator.synthesizeSnapshot(
+        dummyNodes,
+        JSON.stringify(prevState),
+        { maxStateTokens: 150 }, // Super aggressive to force drops
+      );
+      const result = JSON.parse(resultJson) as SnapshotState;
+      expect(resultJson.length).toBeLessThanOrEqual(150);
+      expect(result.discovered_facts.length).toBeLessThan(3);
+    });
+
+    it('should cascade to dropping constraints if facts are exhausted', async () => {
+      const prevState: SnapshotState = {
+        active_tasks: [{ id: 'task_1', description: 'Surviving Task' }],
+        discovered_facts: ['Only Fact'],
+        constraints_and_preferences: ['Rule 1', 'Rule 2'],
+        recent_arc: ['Arc 1'],
+      };
+      mockGenerateJson.mockResolvedValue({});
+      vi.mocked(
+        mockEnv.tokenCalculator.estimateTokensForString,
+      ).mockImplementation((str) => str.length);
+      const generator = new SnapshotGenerator(mockEnv);
+      const resultJson = await generator.synthesizeSnapshot(
+        dummyNodes,
+        JSON.stringify(prevState),
+        { maxStateTokens: 150 }, // Force cascade
+      );
+      const result = JSON.parse(resultJson) as SnapshotState;
+      expect(resultJson.length).toBeLessThanOrEqual(150);
+      expect(result.discovered_facts).toHaveLength(0); // Facts gone
+      expect(result.constraints_and_preferences.length).toBeLessThan(2);
+    });
+
+    it('should cascade to dropping recent_arc if facts and constraints are exhausted', async () => {
+      const prevState: SnapshotState = {
+        active_tasks: [{ id: 'task_1', description: 'Surviving Task' }],
+        discovered_facts: [],
+        constraints_and_preferences: [],
+        recent_arc: ['Arc 1', 'Arc 2'],
+      };
+
+      mockGenerateJson.mockResolvedValue({});
+
+      vi.mocked(
+        mockEnv.tokenCalculator.estimateTokensForString,
+      ).mockImplementation((str) => str.length);
+
+      const generator = new SnapshotGenerator(mockEnv);
+      const resultJson = await generator.synthesizeSnapshot(
+        dummyNodes,
+        JSON.stringify(prevState),
+        { maxStateTokens: 140 },
+      );
+
+      const result = JSON.parse(resultJson) as SnapshotState;
+      // String starts at ~151. 140 budget forces both arcs to drop, task remains (len ~135).
+      expect(resultJson.length).toBeLessThanOrEqual(140);
+      expect(result.recent_arc).toEqual([]);
+      expect(result.active_tasks).toHaveLength(1);
+    });
+
+    it('should ultimately drop active_tasks as a last resort in a pathological scenario', async () => {
+      const prevState: SnapshotState = {
+        active_tasks: [
+          { id: 'task_1', description: 'Task 1' },
+          { id: 'task_2', description: 'Task 2' },
+        ],
+        discovered_facts: [],
+        constraints_and_preferences: [],
+        recent_arc: [],
+      };
+      mockGenerateJson.mockResolvedValue({});
+      vi.mocked(
+        mockEnv.tokenCalculator.estimateTokensForString,
+      ).mockImplementation((str) => str.length);
+      const generator = new SnapshotGenerator(mockEnv);
+      const resultJson = await generator.synthesizeSnapshot(
+        dummyNodes,
+        JSON.stringify(prevState),
+        { maxStateTokens: 100 },
+      );
+      const result = JSON.parse(resultJson) as SnapshotState;
+      expect(resultJson.length).toBeLessThanOrEqual(100);
+      expect(result.active_tasks.length).toBeLessThan(2);
+    });
+
+    it('should cleanly break the loop if the state is completely empty but still over budget', async () => {
+      const prevState: SnapshotState = {
+        active_tasks: [],
+        discovered_facts: [],
+        constraints_and_preferences: [],
+        recent_arc: [],
+      };
+      mockGenerateJson.mockResolvedValue({});
+      // Hardcode it to return 5000 always to simulate empty shell over budget
+      vi.mocked(
+        mockEnv.tokenCalculator.estimateTokensForString,
+      ).mockReturnValue(5000);
+      const generator = new SnapshotGenerator(mockEnv);
+      const resultJson = await generator.synthesizeSnapshot(
+        dummyNodes,
+        JSON.stringify(prevState),
+        { maxStateTokens: 1000 },
+      );
+      const result = JSON.parse(resultJson) as SnapshotState;
+      expect(result).toEqual(prevState);
+    });
   });
 });

@@ -126,8 +126,8 @@ export class SnapshotGenerator {
     }
     let pressureWarning = '';
     const stateString = JSON.stringify(previousState);
-    // Simple heuristic: 4 chars per token.
-    const estimatedTokens = stateString.length / 4;
+    const estimatedTokens =
+      this.env.tokenCalculator.estimateTokensForString(stateString);
     const maxTokens = options.maxStateTokens ?? 4000;
 
     if (estimatedTokens > maxTokens * 0.8) {
@@ -290,6 +290,37 @@ ${formatNodesForLlm(nodes)}`;
       if (newState.recent_arc.length > maxTurns) {
         newState.recent_arc = newState.recent_arc.slice(-maxTurns);
       }
+    }
+
+    // 4. Enforce Token Budget (Structured Pruning Backstop)
+    let currentTokens = this.env.tokenCalculator.estimateTokensForString(
+      JSON.stringify(newState),
+    );
+    while (currentTokens > maxTokens) {
+      // Priority 1: Drop oldest facts
+      if (newState.discovered_facts.length > 0) {
+        newState.discovered_facts.shift();
+      }
+      // Priority 2: Drop oldest constraints
+      else if (newState.constraints_and_preferences.length > 0) {
+        newState.constraints_and_preferences.shift();
+      }
+      // Priority 3: Drop oldest narrative arc
+      else if (newState.recent_arc.length > 0) {
+        newState.recent_arc.shift();
+      }
+      // Priority 4: Drop oldest active tasks (Pathological emergency)
+      else if (newState.active_tasks.length > 0) {
+        newState.active_tasks.shift();
+      }
+      // Priority 5: The state is completely empty, break to avoid infinite loop
+      else {
+        break;
+      }
+
+      currentTokens = this.env.tokenCalculator.estimateTokensForString(
+        JSON.stringify(newState),
+      );
     }
 
     return JSON.stringify(newState);
