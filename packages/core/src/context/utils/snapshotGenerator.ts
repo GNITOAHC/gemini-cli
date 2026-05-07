@@ -6,6 +6,7 @@
 import type { ConcreteNode } from '../graph/types.js';
 import type { ContextEnvironment } from '../pipeline/environment.js';
 import { LlmRole } from '../../telemetry/llmRole.js';
+import { formatNodesForLlm } from './formatNodesForLlm.js';
 
 export class SnapshotGenerator {
   constructor(private readonly env: ContextEnvironment) {}
@@ -16,25 +17,27 @@ export class SnapshotGenerator {
   ): Promise<string> {
     const systemPrompt =
       systemInstruction ??
-      `You are an expert Context Memory Manager. You will be provided with a raw transcript of older conversation turns between a user and an AI assistant.
-Your task is to synthesize these turns into a single, dense, factual snapshot that preserves all critical context, preferences, active tasks, and factual knowledge.
+      `You are an expert Context Memory Manager. You will be provided with a raw transcript of older conversation turns between a "user" and a "model" (the AI assistant).
+Your task is to synthesize these turns into a dense, highly structured XML snapshot.
 
-Discard conversational filler, pleasantries, and redundant back-and-forth iterations. Output ONLY the raw factual snapshot, formatted compactly. Do not include markdown wrappers, prefixes like "Here is the snapshot", or conversational elements.`;
+You MUST follow this exact XML schema. Do not use markdown blocks outside the XML.
 
-    let userPromptText = 'TRANSCRIPT TO SNAPSHOT:\n\n';
-    for (const node of nodes) {
-      const payload = node.payload;
-      let nodeContent = '';
-      if (payload.text) {
-        nodeContent = payload.text;
-      } else if (payload.functionCall) {
-        nodeContent = `CALL: ${payload.functionCall.name}(${JSON.stringify(payload.functionCall.args)})`;
-      } else if (payload.functionResponse) {
-        nodeContent = `RESPONSE: ${JSON.stringify(payload.functionResponse.response)}`;
-      }
+<snapshot>
+  <active_tasks>
+    (List any tasks, goals, or requests from the user that remain unresolved or active. Be specific.)
+  </active_tasks>
+  <discovered_facts>
+    (List explicit empirical facts discovered during the session. YOU MUST PRESERVE specific file paths, symbol names, error codes, and configuration values. Do not abstract them away.)
+  </discovered_facts>
+  <constraints_and_preferences>
+    (List any specific rules or instructions the user provided during this session, e.g., "do not modify tests yet".)
+  </constraints_and_preferences>
+  <summary>
+    (A very brief 1-2 sentence chronological summary of what occurred in the transcript.)
+  </summary>
+</snapshot>`;
 
-      userPromptText += `[${node.type}]: ${nodeContent}\n`;
-    }
+    const userPromptText = 'TRANSCRIPT TO SNAPSHOT:\n\n' + formatNodesForLlm(nodes);
 
     const response = await this.env.llmClient.generateContent({
       role: LlmRole.UTILITY_STATE_SNAPSHOT_PROCESSOR,
